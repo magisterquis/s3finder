@@ -209,6 +209,11 @@ func checker(
 	for name := range namech {
 		/* Check each name */
 		check(name, "", c, MAXRECURSION, slog, nonBuckets)
+		/* Check the dots-to-dashes equivalent */
+		if d := strings.Replace(name, ".", "-", -1); d != name {
+			check(d, "", c, MAXRECURSION, slog, nonBuckets)
+		}
+
 	}
 }
 
