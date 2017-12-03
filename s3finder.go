@@ -98,6 +98,13 @@ Options:
 		go checker(namech, NRClient, wg, slog, *nonBuckets)
 	}
 
+	/* Handle names on the command line */
+	if 0 < flag.NArg() {
+		for _, n := range flag.Args() {
+			namech <- n
+		}
+	}
+
 	/* Handle names from a file, if we have one */
 	if "" != *nameF {
 		if err := namesFromFile(namech, *nameF); nil != err {
@@ -106,13 +113,6 @@ Options:
 				*nameF,
 				err,
 			)
-		}
-	}
-
-	/* Handle names on the command line */
-	if 0 < flag.NArg() {
-		for _, n := range flag.Args() {
-			namech <- n
 		}
 	}
 
