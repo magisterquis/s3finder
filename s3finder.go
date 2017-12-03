@@ -282,6 +282,9 @@ func check(
 		}
 		/* Check with new region in URL */
 		check(n, region, c, rem-1, slog, nonBuckets)
+	case 400: /* Bad request */
+		log.Printf("[%v] Bad request (%v)", n, req.URL)
+		return
 	case 403: /* Bucket, but forbidden */
 		log.Printf("[%v] Forbidden (%v)", n, req.URL)
 		return
