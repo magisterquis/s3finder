@@ -1,4 +1,13 @@
+// s3finder finds S3 buckets
 package main
+
+/*
+ * s3finder.go
+ * Find s3 buckets
+ * By J. Stuart McMurray
+ * Created 20171202
+ * Last Modified 20171202
+ */
 
 import (
 	"bufio"
