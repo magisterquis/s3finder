@@ -19,6 +19,8 @@ with "special" (i.e. non-alphanumeric) characters.  Building with the current
 upon request.  Please see https://github.com/golang/go/issues/22184 for more
 details*
 
+For legal use only.
+
 Installation
 ------------
 ```
