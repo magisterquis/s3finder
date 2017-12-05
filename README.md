@@ -4,7 +4,8 @@ Yet another program to find readable S3 buckets.
 
 Can search using a wordlist or by monitoring the certstream network for
 domain names from certificate transparency logs.  If a name contains dots, a
-name with the dots replaced by dashes will be tried, as well.
+name with the dots replaced by dashes will be tried, as well.  All queries are
+done via HTTPS.
 
 Found buckets will be written to stdout.  All other messages are written to
 stderr, to make for easy logging.
