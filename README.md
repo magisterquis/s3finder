@@ -11,6 +11,13 @@ stderr, to make for easy logging.
 
 Heavily influenced by https://github.com/eth0izzle/bucket-stream.
 
+*As of Go 1.9.2, there is a bug which causes memory and CPU exhaustion with
+international domain names.  This can be triggered by feeding trying a name
+with "special" (i.e. non-alphanumeric) characters.  Building with the current
+(as of 20171204) Go master branch solves this problem.  Binaries available
+upon request.  Please see https://github.com/golang/go/issues/22184 for more
+details*
+
 Installation
 ------------
 ```
