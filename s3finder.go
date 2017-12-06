@@ -199,7 +199,7 @@ CERTLOOP:
 				errs = nil
 				break CERTLOOP
 			}
-			log.Printf("Certificate stream error: %v", err)
+			log.Fatalf("Certificate stream error: %v", err)
 		}
 	}
 }
