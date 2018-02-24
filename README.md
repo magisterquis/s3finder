@@ -54,3 +54,12 @@ combined with a file and names on the command line.
 ```bash
 s3finder -f possible_names -certs kitten mug tea
 ```
+
+Tags
+----
+As it's fairly common for buckets to be something other than just a domain
+name, S3Finder can add tags like "backup" or "images" to queried names.  Thus,
+for `foo.example.com`, `backup-foo.example.com`, `foo-example-com-images`, and
+a handful of other combinations will be tried.  A comprehensive list is
+built-in to S3Finder, but a custom list can be specified with `-tags`.  Tags
+can be disabled with `-tags no`.

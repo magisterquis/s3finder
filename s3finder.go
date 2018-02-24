@@ -6,7 +6,7 @@ package main
  * Find s3 buckets
  * By J. Stuart McMurray
  * Created 20171202
- * Last Modified 20171202
+ * Last Modified 20171224
  */
 
 import (
@@ -20,6 +20,8 @@ import (
 	"sync"
 
 	certstream "github.com/CaliDog/certstream-go"
+	lru "github.com/hashicorp/golang-lru"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -32,6 +34,10 @@ const (
 	// S3URL is the base S3 URL to try, with a placeholder for the region
 	// and the bucket name.
 	S3URL = `https://s3%v.amazonaws.com/%v`
+
+	// SEENCACHESIZE is the number of entries in the LRU cache to keep, to
+	// prevent duplicate searches for domains with similar parent domains.
+	SEENCACHESIZE = 10240
 )
 
 func main() {
@@ -57,6 +63,13 @@ func main() {
 			false,
 			"Print names which don't have an S3 bucket",
 		)
+		tagFile = flag.String(
+			"tags",
+			"",
+			"If set, use tags from the file named `F` instead of "+
+				"the built-in tags, or \"no\" to disable "+
+				"tags altogether",
+		)
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(
@@ -64,10 +77,16 @@ func main() {
 			`Usage: %v [options] [name [name...]]
 
 Tries to find publicly-accessible S3 buckets given bucket names or by watching
-the certificate transparency logs.
+the certificate transparency logs.  Names which appear to be domain names
+will be searched, then broken into components and searched.
 
 Names may be read from a file with -f, in which case blank lines and lines
 starting with a # will be skipped.  The file name may be - to read from stdin.
+
+Tags (such as "backup" and "images" can be added to the names automatically
+with the -tags option.  By default, a built-in list of tags is used.  A custom
+list may be specified as a file with one tag per line.  Blank lines and lines
+starting with a # will be skipped.
 
 Options:
 `,
@@ -90,12 +109,30 @@ Options:
 		},
 	}
 
+	/* Get tags */
+	tags, err := getTags(*tagFile)
+	if nil != err {
+		log.Fatalf("Unable to get tags from %v: %v", *tagFile, err)
+	}
+	if 1 == len(tags) {
+		log.Printf("Will apply 1 tag to each name")
+	} else {
+		log.Printf("Will apply %v tags to each name", len(tags))
+	}
+
+	/* Start name processor */
+	var (
+		bucketch = make(chan string)
+		namech   = make(chan string)
+	)
+	/* TODO: Generate tags */
+	go processNames(bucketch, namech, tags)
+
 	/* Start checkers */
 	wg := &sync.WaitGroup{}
-	namech := make(chan string)
 	for i := uint(0); i < *nQuery; i++ {
 		wg.Add(1)
-		go checker(namech, NRClient, wg, slog, *nonBuckets)
+		go checker(bucketch, NRClient, wg, slog, *nonBuckets)
 	}
 
 	/* Handle names on the command line */
@@ -208,21 +245,16 @@ CERTLOOP:
 Requests to see if the domain is an S3 bucket are made with c.  If nonBuckets
 is true, names which aren't buckets are printed. */
 func checker(
-	namech <-chan string,
+	bucketch <-chan string,
 	c *http.Client,
 	wg *sync.WaitGroup,
 	slog *log.Logger,
 	nonBuckets bool,
 ) {
 	defer wg.Done()
-	for name := range namech {
+	for bucket := range bucketch {
 		/* Check each name */
-		check(name, "", c, MAXRECURSION, slog, nonBuckets)
-		/* Check the dots-to-dashes equivalent */
-		if d := strings.Replace(name, ".", "-", -1); d != name {
-			check(d, "", c, MAXRECURSION, slog, nonBuckets)
-		}
-
+		check(bucket, "", c, MAXRECURSION, slog, nonBuckets)
 	}
 }
 
@@ -302,4 +334,319 @@ func check(
 		)
 		return
 	}
+}
+
+/* processNames turns the names on namech into a load of possible bucket names
+which are sent to bucketch */
+func processNames(
+	bucketch chan<- string,
+	namech <-chan string,
+	tags []string,
+) {
+	defer close(bucketch)
+
+	/* Cache to prevent duplicate checks */
+	seen, err := lru.New(SEENCACHESIZE)
+	if nil != err {
+		log.Fatalf("Unable to make seen name cache: %v", err)
+	}
+
+	/* Check each name sent to us, adding interesting bits and paring down
+	long domains. */
+	for name := range namech {
+		/* Skip empty names and names which look like comments. */
+		name := strings.TrimSpace(name)
+		if "" == name || strings.HasPrefix(name, "#") {
+			continue
+		}
+
+		/* Names without a dot aren't DNS names, no need to split */
+		if !strings.Contains(name, ".") {
+			processName(bucketch, seen, name, tags)
+			continue
+		}
+
+		/* We likely have a domain name (or something like one).
+		Process it and all its parents until but not including the
+		public suffix. */
+		ps, _ := publicsuffix.PublicSuffix(name)
+
+		/* Process the name and its parents */
+		for name != ps {
+			processName(bucketch, seen, name, tags)
+			/* Split leftmost domain off */
+			parts := strings.SplitN(name, ".", 2)
+			if 2 != len(parts) {
+				log.Panicf("unable to get parent of %q", parts)
+			}
+			/* Process bare label, as well */
+			processName(bucketch, seen, parts[0], tags)
+			/* Process parent next time */
+			name = parts[1]
+			if "" == name {
+				return
+			}
+		}
+	}
+}
+
+/* processName appends and prepends various tags to the name and changes dots
+to hyphens.  The resulting names are sent to bucketch. */
+func processName(
+	bucketch chan<- string,
+	seen *lru.Cache,
+	name string,
+	tags []string,
+) {
+	/* If we've seen the name, don't try again */
+	if _, ok := seen.Get(name); ok {
+		return
+	}
+	/* Note we've seen it, to prevent rechecking */
+	seen.Add(name, nil)
+
+	/* Send name, as-is */
+	sendWithDotsAndHyphensChanged(bucketch, []string{name})
+
+	/* Add tags, send out */
+	for _, tag := range tags {
+		sendWithDotsAndHyphensChanged(bucketch, []string{
+			tag + name,
+			name + tag,
+			tag + "." + name,
+			name + "." + tag,
+			tag + "-" + name,
+			name + "-" + tag,
+		})
+	}
+}
+
+/* sendWithDotsAndHyphensChanged sends every string in ns to c with several
+combinations of changing dots to dashes and vice-versa.  No duplicates will be
+sent. */
+func sendWithDotsAndHyphensChanged(c chan<- string, ns []string) {
+	m := map[string]struct{}{} /* Deduper */
+
+	/* Add all combinations to m */
+	for _, n := range ns {
+		/* The string itself */
+		m[n] = struct{}{}
+		/* With hyphens */
+		m[strings.Replace(n, ".", "-", -1)] = struct{}{}
+		/* With dots */
+		m[strings.Replace(n, "-", ".", -1)] = struct{}{}
+		/* Switching them */
+		m[strings.Map(func(r rune) rune {
+			switch r {
+			case '.':
+				return '-'
+			case '-':
+				return '.'
+			default:
+				return r
+			}
+		}, n)] = struct{}{}
+	}
+
+	/* Send them out */
+	for k := range m {
+		c <- k
+	}
+}
+
+/* getTags returns a slice of tags to use.  If fn is "no", it returns an empty
+slice.  If fn is the empty string, it returns tags from TAGLIST.  Otherwise
+fn is treated as a filename and tags are read from the file, one per line.
+Blank lines and comments are skipped. */
+func getTags(fn string) ([]string, error) {
+	/* No means no tags */
+	if "no" == fn {
+		return nil, nil
+	}
+	/* Empty means use the built-in list */
+	if "" == fn {
+		return TAGLIST, nil
+	}
+
+	/* Try reading tags from the file */
+	/* Open file */
+	f, err := os.Open(fn)
+	if nil != err {
+		return nil, err
+	}
+	/* Read each line, appending it to o if it's a tag */
+	s := bufio.NewScanner(f)
+	var o []string
+	for s.Scan() {
+		/* Line from file */
+		l := strings.TrimSpace(s.Text())
+		/* Skip blank lines and comments */
+		if "" == l || strings.HasPrefix(l, "#") {
+			continue
+		}
+		o = append(o, l)
+	}
+	if err := s.Err(); nil != err {
+		return nil, err
+	}
+	return o, nil
+}
+
+// TAGLIST contains the default list of tags to try to prepend and append to
+// names
+var TAGLIST = []string{
+	"admin",
+	"administrator",
+	"alpha",
+	"android",
+	"app",
+	"artifacts",
+	"assets",
+	"audit",
+	"audit-logs",
+	"aws",
+	"aws-logs",
+	"awslogs",
+	"backup",
+	"backups",
+	"bak",
+	"bamboo",
+	"beta",
+	"betas",
+	"billing",
+	"blog",
+	"bucket",
+	"build",
+	"builds",
+	"cache",
+	"cdn",
+	"club",
+	"cluster",
+	"common",
+	"consultants",
+	"contact",
+	"corp",
+	"corporate",
+	"data",
+	"dev",
+	"developer",
+	"developers",
+	"development",
+	"devops",
+	"directory",
+	"discount",
+	"dl",
+	"dns",
+	"docker",
+	"download",
+	"downloads",
+	"dynamo",
+	"dynamodb",
+	"ec2",
+	"ecs",
+	"elastic",
+	"elb",
+	"elk",
+	"emails",
+	"es",
+	"events",
+	"export",
+	"files",
+	"fileshare",
+	"gcp",
+	"git",
+	"github",
+	"gitlab",
+	"graphite",
+	"graphql",
+	"help",
+	"hub",
+	"iam",
+	"images",
+	"img",
+	"infra",
+	"internal",
+	"internal-tools",
+	"ios",
+	"jira",
+	"js",
+	"kubernetes",
+	"landing",
+	"ldap",
+	"loadbalancer",
+	"logs",
+	"logstash",
+	"mail",
+	"main",
+	"manuals",
+	"mattermost",
+	"media",
+	"mercurial",
+	"mobile",
+	"mysql",
+	"ops",
+	"oracle",
+	"packages",
+	"photos",
+	"pics",
+	"pictures",
+	"postgres",
+	"presentations",
+	"preview",
+	"private",
+	"pro",
+	"prod",
+	"production",
+	"products",
+	"project",
+	"projects",
+	"psql",
+	"public",
+	"rds",
+	"repo",
+	"reports",
+	"resources",
+	"s3",
+	"screenshots",
+	"scripts",
+	"sec",
+	"security",
+	"services",
+	"share",
+	"shop",
+	"sitemaps",
+	"slack",
+	"snapshots",
+	"source",
+	"splunk",
+	"src",
+	"stage",
+	"staging",
+	"static",
+	"stats",
+	"storage",
+	"store",
+	"subversion",
+	"support",
+	"svn",
+	"syslog",
+	"teamcity",
+	"temp",
+	"templates",
+	"terraform",
+	"test",
+	"tmp",
+	"traffic",
+	"training",
+	"travis",
+	"troposphere",
+	"uploads",
+	"userpictures",
+	"users",
+	"ux",
+	"videos",
+	"web",
+	"website",
+	"wp",
+	"www",
 }
