@@ -70,6 +70,12 @@ func main() {
 				"the built-in tags, or \"no\" to disable "+
 				"tags altogether",
 		)
+		ignoreNotAllowed = flag.Bool(
+			"ignore-forbidden",
+			false,
+			"Don't print a message when access to a bucket is "+
+				"forbidden (HTTP 403)",
+		)
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(
@@ -132,7 +138,14 @@ Options:
 	wg := &sync.WaitGroup{}
 	for i := uint(0); i < *nQuery; i++ {
 		wg.Add(1)
-		go checker(bucketch, NRClient, wg, slog, *nonBuckets)
+		go checker(
+			bucketch,
+			NRClient,
+			wg,
+			slog,
+			*nonBuckets,
+			*ignoreNotAllowed,
+		)
 	}
 
 	/* Handle names on the command line */
@@ -250,18 +263,28 @@ func checker(
 	wg *sync.WaitGroup,
 	slog *log.Logger,
 	nonBuckets bool,
+	ignoreNotAllowed bool,
 ) {
 	defer wg.Done()
 	for bucket := range bucketch {
 		/* Check each name */
-		check(bucket, "", c, MAXRECURSION, slog, nonBuckets)
+		check(
+			bucket,
+			"",
+			c,
+			MAXRECURSION,
+			slog,
+			nonBuckets,
+			ignoreNotAllowed,
+		)
 	}
 }
 
 /* check checks if n is a domain pointing to a publically-accessible s3 bucket,
 using c to make requests to see if the bucket is public.  rem controlls how
 many recurions remain before we give up.  If nonBuckets is true, names which
-aren't buckets are printed. */
+aren't buckets are printed.  If ignoreNotALlowed is true, HTTP403's are
+silently ignored. */
 func check(
 	n string,
 	region string,
@@ -269,6 +292,7 @@ func check(
 	rem uint,
 	slog *log.Logger,
 	nonBuckets bool,
+	ignoreNotAllowed bool,
 ) {
 	/* Make sure we're allowed to recurse */
 	if 0 == rem {
@@ -313,12 +337,14 @@ func check(
 			)
 		}
 		/* Check with new region in URL */
-		check(n, region, c, rem-1, slog, nonBuckets)
+		check(n, region, c, rem-1, slog, nonBuckets, ignoreNotAllowed)
 	case 400: /* Bad request */
 		log.Printf("[%v] Bad request (%v)", n, req.URL)
 		return
 	case 403: /* Bucket, but forbidden */
-		log.Printf("[%v] Forbidden (%v)", n, req.URL)
+		if !ignoreNotAllowed {
+			log.Printf("[%v] Forbidden (%v)", n, req.URL)
+		}
 		return
 	case 404: /* Not a bucket */
 		if nonBuckets {
@@ -446,6 +472,18 @@ func sendWithDotsAndHyphensChanged(c chan<- string, ns []string) {
 				return r
 			}
 		}, n)] = struct{}{}
+	}
+
+	/* Compress runs of .. */
+	for k := range m {
+		if !strings.Contains(k, "..") {
+			continue
+		}
+		delete(m, k)
+		for strings.Contains(k, "..") {
+			strings.Replace(k, "..", ".", -1)
+		}
+		m[k] = struct{}{}
 	}
 
 	/* Send them out */
