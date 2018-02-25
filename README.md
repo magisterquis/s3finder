@@ -56,3 +56,7 @@ for `foo.example.com`, `backup-foo.example.com`, `foo-example-com-images`, and
 a handful of other combinations will be tried.  A comprehensive list is
 built-in to S3Finder, but a custom list can be specified with `-tags`.  Tags
 can be disabled with `-tags no`.
+
+All of the buckets which would be searched for `division.example.com` using
+the built-in list are in the file
+[`division.example.com_buckets`](division.example.com_buckets).
