@@ -33,7 +33,7 @@ const (
 
 	// S3URL is the base S3 URL to try, with a placeholder for the region
 	// and the bucket name.
-	S3URL = `https://s3%v.amazonaws.com/%v`
+	S3URL = `https://s3%v.amazonaws.com`
 
 	// SEENCACHESIZE is the number of entries in the LRU cache to keep, to
 	// prevent duplicate searches for domains with similar parent domains.
@@ -131,7 +131,7 @@ Options:
 		bucketch = make(chan string)
 		namech   = make(chan string)
 	)
-	/* TODO: Generate tags */
+	/* Generate tags */
 	go processNames(bucketch, namech, tags)
 
 	/* Start checkers */
@@ -307,13 +307,14 @@ func check(
 
 	/* Check if it's an S3 bucket */
 	req, err := http.NewRequest("GET",
-		fmt.Sprintf(S3URL, region, n),
+		fmt.Sprintf(S3URL, region),
 		nil,
 	)
 	if nil != err {
 		log.Printf("[%v] Bucket name creates invalid URL: %v", n, err)
 		return
 	}
+
 	req.Host = n
 	res, err := c.Do(req)
 	if nil != err {
@@ -325,7 +326,7 @@ func check(
 	/* See what happens */
 	switch res.StatusCode {
 	case 200: /* Public bucket */
-		slog.Printf("[%v] Public bucket: %v", n, req.URL)
+		slog.Printf("[%v] Public bucket: %v/%v", n, req.URL, n)
 	case 307: /* Redirect, it's probably an S3 bucket in another region */
 		region := res.Header.Get("x-amz-bucket-region")
 		/* We shouldn't be redirected to the default region */
@@ -373,6 +374,7 @@ func processNames(
 
 	/* Cache to prevent duplicate checks */
 	seen, err := lru.New(SEENCACHESIZE)
+	seen.Add("www", nil) /* DEBUG */
 	if nil != err {
 		log.Fatalf("Unable to make seen name cache: %v", err)
 	}
