@@ -608,6 +608,11 @@ func queryCTL(n string) ([]string, error) {
 	}
 	defer res.Body.Close()
 
+	/* 404's mean no names */
+	if http.StatusNotFound == res.StatusCode {
+		return []string{}, nil
+	}
+
 	/* Put commas between bits, turn into a list */
 	b, err := ioutil.ReadAll(res.Body)
 	if nil != err {
