@@ -48,6 +48,9 @@ const (
 
 	// NAMECHARS are the allowed characters in a bucket name
 	NAMECHARS = "abcdefghijklmnopqrstuvwxyz0123456789-"
+
+	// MAXLABLELEN is the maximum length of a bucket label
+	MAXLABELLEN = 64
 )
 
 func main() {
@@ -482,6 +485,19 @@ func processName(
 	}
 	/* Note we've seen it, to prevent rechecking */
 	seen.Add(name, nil)
+
+	/* If any of the labels are too long, don't try */
+	parts := strings.Split(name, ".")
+	for _, part := range parts {
+		if MAXLABELLEN < len(part) {
+			log.Printf(
+				"[%v] Invalid name: label %q too long",
+				name,
+				part,
+			)
+			return
+		}
+	}
 
 	/* Send name, as-is */
 	sendWithDotsAndHyphensChanged(bucketch, []string{name})
