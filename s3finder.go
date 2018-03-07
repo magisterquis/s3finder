@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	certstream "github.com/CaliDog/certstream-go"
 	lru "github.com/hashicorp/golang-lru"
@@ -47,10 +48,17 @@ const (
 	SEENCACHESIZE = 10240
 
 	// NAMECHARS are the allowed characters in a bucket name
-	NAMECHARS = "abcdefghijklmnopqrstuvwxyz0123456789-"
+	NAMECHARS = "abcdefghijklmnopqrstuvwxyz0123456789-."
 
-	// MAXLABLELEN is the maximum length of a bucket label
+	// MAXLABELLEN is the maximum length of a bucket label
 	MAXLABELLEN = 64
+
+	// S3PATHURL is the S3 URL with S3 as a path component.  We see this
+	// sometimes as a redirect target.
+	S3PATHURL = "https://aws.amazon.com/s3/"
+
+	// RETRYWAIT is the pause before retries after EOF or no route to host
+	RETRYWAIT = time.Second
 )
 
 func main() {
@@ -135,6 +143,10 @@ Options:
 			req *http.Request,
 			via []*http.Request,
 		) error {
+			/* Allow different URL */
+			if S3PATHURL == req.URL.String() {
+				return nil
+			}
 			return http.ErrUseLastResponse
 		},
 	}
@@ -327,6 +339,7 @@ func check(
 	nonBuckets bool,
 	ignoreNotAllowed bool,
 ) {
+
 	/* Make sure we're allowed to recurse */
 	if 0 == rem {
 		log.Printf("[%v] Too many attempts", n)
@@ -347,19 +360,50 @@ func check(
 		log.Printf("[%v] Bucket name creates invalid URL: %v", n, err)
 		return
 	}
-
 	req.Host = n
 	res, err := c.Do(req)
+
+	/* URL for bucket */
+	bucketURL := req.URL.String() + "/" + n
+
+	/* Handle request errors */
 	if nil != err {
-		log.Printf("[%v] Bucket check error: %v", n, err)
+		var m string
+		/* Try again if we EOF or no route to host */
+		if "EOF" == err.Error() {
+			m = fmt.Sprintf("[%v] Retrying due to EOF", bucketURL)
+		} else if strings.HasSuffix(err.Error(), "no route to host") {
+			m = fmt.Sprintf(
+				"[%v] Retrying due to route error",
+				bucketURL,
+			)
+		} else {
+			/* Any other error is probably fatal for this name */
+			log.Printf("[%v] Bucket check error: %q", n, err)
+			return
+		}
+		/* Wait for temporary problems to resolve */
+		log.Printf("%v", m)
+		time.Sleep(RETRYWAIT)
+		check(
+			n,
+			region,
+			c,
+			rem-1,
+			slog,
+			nonBuckets,
+			ignoreNotAllowed,
+		)
 		return
 	}
 	res.Body.Close()
 
+	/* TODO: Make sure it doesn't require name.amazon syntax */
+
 	/* See what happens */
 	switch res.StatusCode {
 	case 200: /* Public bucket */
-		slog.Printf("[%v] Public bucket: %v/%v", n, req.URL, n)
+		slog.Printf("[%v] Public bucket: %v", n, bucketURL)
 	case 307: /* Redirect, it's probably an S3 bucket in another region */
 		region := res.Header.Get("x-amz-bucket-region")
 		/* We shouldn't be redirected to the default region */
@@ -373,11 +417,11 @@ func check(
 		/* Check with new region in URL */
 		check(n, region, c, rem-1, slog, nonBuckets, ignoreNotAllowed)
 	case 400: /* Bad request */
-		log.Printf("[%v] Bad request (%v)", n, req.URL)
+		log.Printf("[%v] Bad request (%v)", n, bucketURL)
 		return
 	case 403: /* Bucket, but forbidden */
 		if !ignoreNotAllowed {
-			log.Printf("[%v] Forbidden (%v)", n, req.URL)
+			log.Printf("[%v] Forbidden (%v)", n, bucketURL)
 		}
 		return
 	case 404: /* Not a bucket */
@@ -478,6 +522,11 @@ func processName(
 		}
 		return r
 	}, name)
+
+	/* Don't use empty names */
+	if "" == name {
+		return
+	}
 
 	/* If we've seen the name, don't try again */
 	if _, ok := seen.Get(name); ok {
