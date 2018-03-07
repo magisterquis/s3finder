@@ -76,6 +76,11 @@ func main() {
 			"Don't print a message when access to a bucket is "+
 				"forbidden (HTTP 403)",
 		)
+		tryWWW = flag.Bool(
+			"try-www",
+			false,
+			"Don't ignore \"www\" when trying partial names",
+		)
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(
@@ -126,13 +131,22 @@ Options:
 		log.Printf("Will apply %v tags to each name", len(tags))
 	}
 
+	/* Cache to prevent duplicate checks */
+	seen, err := lru.New(SEENCACHESIZE)
+	if nil != err {
+		log.Fatalf("Unable to make seen name cache: %v", err)
+	}
+	if !*tryWWW {
+		seen.Add("www", nil)
+	}
+
 	/* Start name processor */
 	var (
 		bucketch = make(chan string)
 		namech   = make(chan string)
 	)
 	/* Generate tags */
-	go processNames(bucketch, namech, tags)
+	go processNames(bucketch, namech, tags, seen)
 
 	/* Start checkers */
 	wg := &sync.WaitGroup{}
@@ -369,15 +383,9 @@ func processNames(
 	bucketch chan<- string,
 	namech <-chan string,
 	tags []string,
+	seen *lru.Cache,
 ) {
 	defer close(bucketch)
-
-	/* Cache to prevent duplicate checks */
-	seen, err := lru.New(SEENCACHESIZE)
-	seen.Add("www", nil) /* DEBUG */
-	if nil != err {
-		log.Fatalf("Unable to make seen name cache: %v", err)
-	}
 
 	/* Check each name sent to us, adding interesting bits and paring down
 	long domains. */
