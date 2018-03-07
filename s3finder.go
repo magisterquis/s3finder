@@ -11,10 +11,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -35,9 +39,15 @@ const (
 	// and the bucket name.
 	S3URL = `https://s3%v.amazonaws.com`
 
+	// CTLURL is the URL pattern for querying crt.sh
+	CTLURL = "https://crt.sh/?q=%%.%v&output=json"
+
 	// SEENCACHESIZE is the number of entries in the LRU cache to keep, to
 	// prevent duplicate searches for domains with similar parent domains.
 	SEENCACHESIZE = 10240
+
+	// NAMECHARS are the allowed characters in a bucket name
+	NAMECHARS = "abcdefghijklmnopqrstuvwxyz0123456789-"
 )
 
 func main() {
@@ -80,6 +90,12 @@ func main() {
 			"try-www",
 			false,
 			"Don't ignore \"www\" when trying partial names",
+		)
+		useCTL = flag.Bool(
+			"ctl",
+			false,
+			"Query the certificate transparency log database at "+
+				"crt.sh for additional subdomains",
 		)
 	)
 	flag.Usage = func() {
@@ -146,7 +162,7 @@ Options:
 		namech   = make(chan string)
 	)
 	/* Generate tags */
-	go processNames(bucketch, namech, tags, seen)
+	go processNames(bucketch, namech, tags, seen, *useCTL)
 
 	/* Start checkers */
 	wg := &sync.WaitGroup{}
@@ -378,12 +394,14 @@ func check(
 }
 
 /* processNames turns the names on namech into a load of possible bucket names
-which are sent to bucketch */
+which are sent to bucketch.  The certificate transparency logs will be queried
+for subdomains if useCTL is true. */
 func processNames(
 	bucketch chan<- string,
 	namech <-chan string,
 	tags []string,
 	seen *lru.Cache,
+	useCTL bool,
 ) {
 	defer close(bucketch)
 
@@ -409,6 +427,22 @@ func processNames(
 
 		/* Process the name and its parents */
 		for name != ps {
+			/* Get domains from crt.sh, if we're meant to */
+			if useCTL {
+				sds, err := queryCTL(name)
+				if nil != err {
+					log.Printf(
+						"Unable to query crt.sh "+
+							"for %v: %v",
+						name,
+						err,
+					)
+				}
+				for _, sd := range sds {
+					processName(bucketch, seen, sd, tags)
+				}
+			}
+			/* Get subdomains */
 			processName(bucketch, seen, name, tags)
 			/* Split leftmost domain off */
 			parts := strings.SplitN(name, ".", 2)
@@ -434,6 +468,14 @@ func processName(
 	name string,
 	tags []string,
 ) {
+	/* Sanitize name */
+	name = strings.Map(func(r rune) rune {
+		if !strings.ContainsRune(NAMECHARS, r) {
+			return -1
+		}
+		return r
+	}, name)
+
 	/* If we've seen the name, don't try again */
 	if _, ok := seen.Get(name); ok {
 		return
@@ -538,6 +580,52 @@ func getTags(fn string) ([]string, error) {
 		return nil, err
 	}
 	return o, nil
+}
+
+/* queryCTL queries the CTL for subdomains of n.  It returns an empty slice and
+no error if none were found. */
+func queryCTL(n string) ([]string, error) {
+	/* Get JSON with more domains */
+	res, err := http.Get(fmt.Sprintf(CTLURL, url.QueryEscape(n)))
+	if nil != err {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	/* Put commas between bits, turn into a list */
+	b, err := ioutil.ReadAll(res.Body)
+	if nil != err {
+		return nil, err
+	}
+
+	/* Unmarshal JSON */
+	var cs []struct {
+		Name string `json:"name_value"`
+	}
+	if err := json.Unmarshal(
+		bytes.Join([][]byte{
+			[]byte("["),
+			bytes.Replace(b, []byte("}{"), []byte("},{"), -1),
+			[]byte("]"),
+		}, []byte{}),
+		&cs,
+	); nil != err {
+		return nil, err
+	}
+
+	/* Dedupe and return names */
+	m := make(map[string]struct{})
+	for _, c := range cs {
+		if "" == c.Name {
+			continue
+		}
+		m[c.Name] = struct{}{}
+	}
+	ns := make([]string, 0, len(m))
+	for k := range m {
+		ns = append(ns, k)
+	}
+	return ns, nil
 }
 
 // TAGLIST contains the default list of tags to try to prepend and append to
