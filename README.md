@@ -48,6 +48,12 @@ combined with a file and names on the command line.
 s3finder -f possible_names -certs kitten mug tea
 ```
 
+CTL Subdomains
+--------------
+Additional subdomains of a given domain can be found from the certificate
+transparency logs with `-ctl`.  This causes a considerably longer runtime but
+greatly expands the number of buckets which will be searched.
+
 Tags
 ----
 As it's fairly common for buckets to be something other than just a domain
