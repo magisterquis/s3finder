@@ -176,8 +176,16 @@ Options:
 		bucketch = make(chan string)
 		namech   = make(chan string)
 	)
+
 	/* Generate tags */
 	go processNames(bucketch, namech, tags, seen, *useCTL)
+
+	/* Filter names through CTL checker, if needed */
+	if *useCTL {
+		inch := make(chan string)
+		go getCTLNames(namech, inch)
+		namech = inch
+	}
 
 	/* Start checkers */
 	wg := &sync.WaitGroup{}
@@ -481,21 +489,6 @@ func processNames(
 
 		/* Process the name and its parents */
 		for name != ps {
-			/* Get domains from crt.sh, if we're meant to */
-			if useCTL { /* TODO: Move somewhere else */
-				sds, err := queryCTL(name)
-				if nil != err {
-					log.Printf(
-						"Unable to query crt.sh "+
-							"for %v: %v",
-						name,
-						err,
-					)
-				}
-				for _, sd := range sds {
-					processName(bucketch, seen, sd, tags)
-				}
-			}
 			/* Get subdomains */
 			processName(bucketch, seen, name, tags)
 			/* Split leftmost domain off */
@@ -707,6 +700,34 @@ func queryCTL(n string) ([]string, error) {
 		ns = append(ns, k)
 	}
 	return ns, nil
+}
+
+/* getCTLNames sends to out anything on ns, plus any names of subdomains of
+names on ns if the name contains a dot. */
+func getCTLNames(out chan<- string, ns <-chan string) {
+	defer close(out)
+	for n := range ns {
+		/* Send out original name */
+		out <- n
+		/* Skip non-domains */
+		if !strings.Contains(n, ".") {
+			continue
+		}
+		/* Send out all subdomains as well */
+		ss, err := queryCTL(n)
+		if nil != err {
+			log.Printf(
+				"Unable to query crt.sh for subdomains of "+
+					"%v: %v",
+				n,
+				err,
+			)
+			continue
+		}
+		for _, s := range ss {
+			out <- s
+		}
+	}
 }
 
 // TAGLIST contains the default list of tags to try to prepend and append to
