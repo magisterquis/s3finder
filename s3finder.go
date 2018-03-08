@@ -339,7 +339,6 @@ func check(
 	nonBuckets bool,
 	ignoreNotAllowed bool,
 ) {
-
 	/* Make sure we're allowed to recurse */
 	if 0 == rem {
 		log.Printf("[%v] Too many attempts", n)
@@ -370,16 +369,24 @@ func check(
 	if nil != err {
 		var m string
 		/* Try again if we EOF or no route to host */
-		if "EOF" == err.Error() {
+		if strings.HasSuffix(err.Error(), ": EOF") {
 			m = fmt.Sprintf("[%v] Retrying due to EOF", bucketURL)
 		} else if strings.HasSuffix(err.Error(), "no route to host") {
 			m = fmt.Sprintf(
 				"[%v] Retrying due to route error",
 				bucketURL,
 			)
+		} else if strings.HasSuffix(
+			err.Error(),
+			": TLS handshake timeout",
+		) {
+			m = fmt.Sprintf(
+				"[%v] Retrying due to TLS handshake timeout",
+				bucketURL,
+			)
 		} else {
 			/* Any other error is probably fatal for this name */
-			log.Printf("[%v] Bucket check error: %q", n, err)
+			log.Printf("[%v] Bucket check error: %v", n, err)
 			return
 		}
 		/* Wait for temporary problems to resolve */
@@ -475,7 +482,7 @@ func processNames(
 		/* Process the name and its parents */
 		for name != ps {
 			/* Get domains from crt.sh, if we're meant to */
-			if useCTL {
+			if useCTL { /* TODO: Move somewhere else */
 				sds, err := queryCTL(name)
 				if nil != err {
 					log.Printf(
@@ -523,6 +530,9 @@ func processName(
 		return r
 	}, name)
 
+	/* Make sure name doesn't start or end with a . */
+	name = strings.Trim(name, ".")
+
 	/* Don't use empty names */
 	if "" == name {
 		return
@@ -532,6 +542,7 @@ func processName(
 	if _, ok := seen.Get(name); ok {
 		return
 	}
+
 	/* Note we've seen it, to prevent rechecking */
 	seen.Add(name, nil)
 
@@ -598,7 +609,7 @@ func sendWithDotsAndHyphensChanged(c chan<- string, ns []string) {
 		}
 		delete(m, k)
 		for strings.Contains(k, "..") {
-			strings.Replace(k, "..", ".", -1)
+			k = strings.Replace(k, "..", ".", -1)
 		}
 		m[k] = struct{}{}
 	}
