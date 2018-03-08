@@ -52,7 +52,11 @@ CTL Subdomains
 --------------
 Additional subdomains of a given domain can be found from the certificate
 transparency logs with `-ctl`.  This causes a considerably longer runtime but
-greatly expands the number of buckets which will be searched.
+greatly expands the number of buckets which will be searched.  Another downside
+is that as subdomains are searched without parent domains (e.g.
+`foo.bar.tridge.com` will cause `foo.bar` and `foo` to be searched), a lot of
+open buckets for common names are found.  Even still, using `-ctl` greatly
+increases the chance of finding relevant buckets.
 
 Tags
 ----
